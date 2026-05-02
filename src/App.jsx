@@ -53,6 +53,68 @@ function RendererSetup() {
   return null
 }
 
+// ─── Buzzer audio ─────────────────────────────────────────────────────────────
+// Shared AudioContext — created once on first user interaction
+let _audioCtx = null
+function getAudioCtx() {
+  if (!_audioCtx) {
+    _audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+  }
+  if (_audioCtx.state === 'suspended') {
+    _audioCtx.resume()
+  }
+  return _audioCtx
+}
+
+function useBuzzerAudio(active) {
+  const oscRef  = useRef(null)
+  const gainRef = useRef(null)
+
+  useEffect(() => {
+    if (active) {
+      const ctx  = getAudioCtx()
+
+      const gain = ctx.createGain()
+      gain.gain.setValueAtTime(0.001, ctx.currentTime)
+      gain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.05)
+      gain.connect(ctx.destination)
+
+      const osc = ctx.createOscillator()
+      osc.type = 'square'
+      osc.frequency.value = 440
+      osc.connect(gain)
+      osc.start()
+
+      oscRef.current  = osc
+      gainRef.current = gain
+    } else {
+      if (gainRef.current && _audioCtx) {
+        const ctx = _audioCtx
+        gainRef.current.gain.setValueAtTime(gainRef.current.gain.value, ctx.currentTime)
+        gainRef.current.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08)
+        const osc = oscRef.current
+        setTimeout(() => {
+          try { osc?.stop() } catch (_) {}
+        }, 120)
+        oscRef.current  = null
+        gainRef.current = null
+      }
+    }
+
+    return () => {
+      try { oscRef.current?.stop() } catch (_) {}
+      oscRef.current  = null
+      gainRef.current = null
+    }
+  }, [active])
+}
+
+function BuzzerAudio({ active }) {
+  useBuzzerAudio(active)
+  return null
+}
+
+
 const BATTERY_GROUND_Y = 0.8  // battery rests on ground at this Y center
 
 // ─── Component categories ─────────────────────────────────────────────────────
@@ -341,22 +403,7 @@ export default function App() {
           .filter(Boolean)
       : []
 
-    // Tag active polar components with whether a resistor is in their circuit path.
-    // A resistor is conducting if both its pin nodes are powered (power flowed through it).
-    const resistors = placed.filter(s => s.type === 'resistor')
-    const hasResistorInPath = resistors.some(r => {
-      const rDef = MODELS.find(m => m.type === 'resistor')
-      if (!rDef?.pins?.length) return false
-      const state = getComponentPinStates(r, boardShape, rDef, poweredNodes, groundedNodes)
-      return state?.active
-    })
-    const taggedStates = componentStates.map(cs =>
-      cs.active && cs.modelDef.anodePinIndex != null
-        ? { ...cs, hasResistor: hasResistorInPath }
-        : cs
-    )
-
-    return { poweredNodes, groundedNodes, componentStates: taggedStates }
+    return { poweredNodes, groundedNodes, componentStates }
   }, [wires, placed, boardShape])
 
   // ── Rail connection notifications ──
@@ -673,7 +720,7 @@ export default function App() {
               }}>
                 <span>{c.active ? '✅' : '⚠️'}</span>
                 {c.modelDef.label}:&nbsp;
-                {c.active ? (c.isTerminal ? 'in circuit ✓' : c.hasResistor ? 'powered ✓ (with resistor)' : 'powered') : 'reversed polarity — flip component'}
+                {c.active ? (c.isTerminal ? 'in circuit ✓' : 'powered') : 'reversed polarity — flip component'}
               </div>
             ))}
           </div>
@@ -732,6 +779,11 @@ export default function App() {
             {/* ── Pin role markers + LED glow ── */}
             {componentStates.map(cs => (
               <ComponentPinMarkers key={cs.shape.id} cs={cs} showMarkers={showPinMarkers} />
+            ))}
+
+            {/* ── Buzzer audio ── */}
+            {componentStates.filter(cs => cs.modelDef.type === 'buzzer').map(cs => (
+              <BuzzerAudio key={cs.shape.id} active={cs.active} />
             ))}
 
             {!wiringMode && activeShape && ghostPos && (

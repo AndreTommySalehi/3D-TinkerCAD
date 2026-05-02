@@ -42,15 +42,13 @@ function pinNodeKey(shape, boardShape, modelDef, pin) {
   const holeBaseX = shape.position[0] - rotOffX
   const holeBaseZ = shape.position[2] - rotOffZ
 
-  const rotX = pin.dx * Math.cos(rotRad) - pin.dz * Math.sin(rotRad)
-  const rotZ = pin.dx * Math.sin(rotRad) + pin.dz * Math.cos(rotRad)
+  const pinDx = pin.dx
+  const pinDz = pin.dz
+  const rotX = pinDx * Math.cos(rotRad) - pinDz * Math.sin(rotRad)
+  const rotZ = pinDx * Math.sin(rotRad) + pinDz * Math.cos(rotRad)
 
-  const vox    = modelDef.visualOffsetX ?? 0
-  const rotVox = vox * Math.cos(rotRad)
-  const rotVoz = vox * Math.sin(rotRad)
-
-  const worldX = holeBaseX + rotX + rotVox
-  const worldZ = holeBaseZ + rotZ + rotVoz
+  const worldX = holeBaseX + rotX
+  const worldZ = holeBaseZ + rotZ
 
   const dx = worldX - bx, dz = worldZ - bz
   const lx = dx * Math.cos(-bbRotRad) - dz * Math.sin(-bbRotRad)
@@ -153,17 +151,13 @@ export function getComponentPinStates(shape, boardShape, modelDef, poweredNodes,
   const holeBaseZ = shape.position[2] - rotOffZ
 
   const pinStates = pins.map((pin, idx) => {
-    // Rotate pin offset (relative to mesh center) by component rotation
     const rotX = pin.dx * Math.cos(rotRad) - pin.dz * Math.sin(rotRad)
     const rotZ = pin.dx * Math.sin(rotRad) + pin.dz * Math.cos(rotRad)
 
-    const vox    = modelDef.visualOffsetX ?? 0
-    const rotVox = vox * Math.cos(rotRad)
-    const rotVoz = vox * Math.sin(rotRad)
-    const worldX = holeBaseX + rotX + rotVox
-    const worldZ = holeBaseZ + rotZ + rotVoz
+    const worldX = holeBaseX + rotX
+    const worldZ = holeBaseZ + rotZ
 
-    // World → board local using hole pos (not visual pos) for correct node lookup
+    // World → board local
     const dx = worldX - bx , dz = worldZ - bz
     const boardLocalX = dx * Math.cos(-bbRotRad) - dz * Math.sin(-bbRotRad)
     const boardLocalZ = dx * Math.sin(-bbRotRad) + dz * Math.cos(-bbRotRad)

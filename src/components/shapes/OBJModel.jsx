@@ -177,24 +177,33 @@ function OBJModelInner({ shape, modelDef, isSelected, onSelect, onDragStart, onD
     if (!sourceModel || !groupRef.current) return
     while (groupRef.current.children.length) groupRef.current.remove(groupRef.current.children[0])
     const clone = sourceModel.clone(true)
-    // Group has NO rotation — it just sits at shape.position (the snap hole).
-    // The clone itself carries the rotation AND the fixed world-space visual offset.
-    // This way vox/voz is always a plain local offset (group is unrotated),
-    // and the clone spins in place around the snap hole.
-    const vox = modelDef.visualOffsetX ?? 0
-    const voz = modelDef.visualOffsetZ ?? 0
-    clone.position.set(vox, 0, voz)
+    // shape.position is stored as: snap_hole_world + rotate(offsetX, offsetZ)
+    // So groupRef sits exactly at the visual center (dome center for LEDs).
+    // The clone needs NO additional offset — just apply rotation in place.
+    clone.position.set(0, 0, 0)
     clone.rotation.set(0, (rotationY * Math.PI) / 180, 0)
     groupRef.current.add(clone)
     sceneRef.current = clone
+
+    // For breadboard: add an opaque mask plane as a child of the group so it
+    // tracks the board imperatively every frame and hides the world grid beneath.
+    if (modelDef.type === 'breadboard') {
+      const maskGeo = new THREE.PlaneGeometry(32, 22)
+      const maskMat = new THREE.MeshStandardMaterial({ color: '#c8dce8', roughness: 0.9 })
+      const maskPlane = new THREE.Mesh(maskGeo, maskMat)
+      maskPlane.rotation.x = -Math.PI / 2
+      maskPlane.position.y = 0.004  // above world grid (y=0.002)
+      maskPlane.receiveShadow = true
+      maskPlane.userData.isMask = true
+      groupRef.current.add(maskPlane)
+    }
   }, [sourceModel, modelDef])
 
   // Update clone rotation and position when rotationY changes (R key press).
   useEffect(() => {
     if (!sceneRef.current) return
-    const vox = modelDef.visualOffsetX ?? 0
-    const voz = modelDef.visualOffsetZ ?? 0
-    sceneRef.current.position.set(vox, 0, voz)
+    sceneRef.current.position.set(0, 0, 0)
+    sceneRef.current.rotation.set(0, (rotationY * Math.PI) / 180, 0)
     sceneRef.current.rotation.set(0, (rotationY * Math.PI) / 180, 0)
   }, [rotationY, modelDef, sourceModel])
 
@@ -356,6 +365,8 @@ function OBJModelInner({ shape, modelDef, isSelected, onSelect, onDragStart, onD
     )
   }
 
+  // The mask plane is added imperatively inside the sourceModel useEffect above,
+  // as a child of groupRef — so it tracks the board position every frame.
   return (
     <group
       ref={groupRef}
@@ -384,10 +395,7 @@ function OBJGhostInner({ modelDef, position, blocked }) {
       color: blocked ? '#f87171' : '#38bdf8', transparent: true, opacity: 0.4, depthWrite: false,
     })
     clone.traverse((child) => { if (child.isMesh) child.material = ghostMat })
-    // Match the same visualOffsetX shift applied to placed models
-    const vox = modelDef.visualOffsetX ?? 0
-    const voz = modelDef.visualOffsetZ ?? 0
-    if (vox || voz) clone.position.set(vox, 0, voz)
+    clone.position.set(0, 0, 0)
     groupRef.current.add(clone)
   }, [sourceModel, blocked, modelDef])
 

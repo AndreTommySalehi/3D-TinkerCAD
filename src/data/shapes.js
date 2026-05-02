@@ -343,37 +343,40 @@ export const MODELS = [
     type: 'led_blue', label: 'LED Blue',
     objPath: '/models/LED-Blue/LEDBlue.obj',
     mtlPath: '/models/LED-Blue/LEDBlue.mtl',
-    targetSize: 3.5, pinOffset: 0.4, offsetX: 0, offsetZ: 0, visualOffsetX: 5.1,
+    // targetSize scaled so leg span = exactly 1 hole pitch (0.9326 world units)
+    // Raw leg span in model = 0.10921 units; needed scale = 0.9326/0.10921
+    targetSize: 3.8504, pinOffset: 0.4,
+    // offsetX = distance from mesh center to cathode (so snap hole = cathode hole)
+    offsetX: 0.4324, offsetZ: 0,
     anodePinIndex: 1,
-    // dx/dz are relative to the logical snap hole (the board hole the component straddles).
-    // circuitSim.js recovers the snap hole by subtracting offsetX from shape.position,
-    // then adds pin.dx to get each physical leg's hole world position (used for both
-    // circuit node lookup AND visual marker rendering).
+    // cathode AT snap hole (dx=0), anode exactly 1 pitch away
     pins: [
-      { dx: -0.30, dz: 0, role: 'cathode' },
-      { dx:  0.55, dz: 0, role: 'anode'   },
+      { dx: 0,      dz: 0, role: 'cathode' },
+      { dx: 0.9326, dz: 0, role: 'anode'   },
     ],
   },
   {
     type: 'led_green', label: 'LED Green',
     objPath: '/models/LED-Green/LEDGreen.obj',
     mtlPath: '/models/LED-Green/LEDGreen.mtl',
-    targetSize: 3.5, pinOffset: 0.4, offsetX: 0, offsetZ: 0, visualOffsetX: 5.1,
+    targetSize: 3.8504, pinOffset: 0.4,
+    offsetX: 0.4324, offsetZ: 0,
     anodePinIndex: 1,
     pins: [
-      { dx: -0.3, dz: 0, role: 'cathode' },
-      { dx:  0.55, dz: 0, role: 'anode'   },
+      { dx: 0,      dz: 0, role: 'cathode' },
+      { dx: 0.9326, dz: 0, role: 'anode'   },
     ],
   },
   {
     type: 'led_red', label: 'LED Red',
     objPath: '/models/LED-Red/LEDRed.obj',
     mtlPath: '/models/LED-Red/LEDRed.mtl',
-    targetSize: 3.5, pinOffset: 0.4, offsetX: 0, offsetZ: 0, visualOffsetX: 5.1,
+    targetSize: 3.8504, pinOffset: 0.4,
+    offsetX: 0.4324, offsetZ: 0,
     anodePinIndex: 1,
     pins: [
-      { dx: -0.3, dz: 0, role: 'cathode' },
-      { dx:  0.55, dz: 0, role: 'anode'   },
+      { dx: 0,      dz: 0, role: 'cathode' },
+      { dx: 0.9326, dz: 0, role: 'anode'   },
     ],
   },
   {
