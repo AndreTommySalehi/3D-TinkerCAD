@@ -1,11 +1,13 @@
 import { Canvas, useThree } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
-import { Suspense } from 'react'
+import { Suspense, useMemo } from 'react'
 import { useRef, useEffect, useState, useCallback } from 'react'
+import * as THREE from 'three'
 
 import {
   MODELS, resolveCollision, BB_THICKNESS,
-  isHoleOccupied, snapToBreadboard,
+  isHoleOccupied, snapToBreadboard, worldToLocal,
+  POWER_RAIL_COLS, GROUND_RAIL_COLS,
 } from './data/shapes.js'
 import { OBJModel, OBJGhostPreview } from './components/shapes/OBJModel.jsx'
 import { Ground }            from './components/scene/Ground.jsx'
@@ -16,7 +18,31 @@ import {
   PlacedWires,
   WirePlacementPreview,
   WireColorPicker,
+  snapWorldToHole,
 } from './components/scene/WireSystem.jsx'
+import { simulateCircuit, buildComponentEdges, getComponentPinStates } from './data/circuitSim.js'
+
+// ─── Battery → breadboard wire visual ────────────────────────────────────────
+function BatteryWire({ bw, pole }) {
+  const color = pole === 'positive' ? '#ef4444' : '#1e40af'
+  const s = new THREE.Vector3(...bw.terminalWorldPos)
+  const e = new THREE.Vector3(...bw.holeWorldPos)
+  const mid = s.clone().lerp(e, 0.5)
+  const span = s.distanceTo(e)
+  mid.y += Math.min(4, 1.5 + span * 0.3)
+  const curve = new THREE.CubicBezierCurve3(
+    s,
+    new THREE.Vector3(s.x, s.y + Math.min(4, 1.5 + span * 0.3), s.z),
+    new THREE.Vector3(e.x, e.y + Math.min(4, 1.5 + span * 0.3), e.z),
+    e
+  )
+  return (
+    <mesh>
+      <tubeGeometry args={[curve, 32, 0.1, 8, false]} />
+      <meshStandardMaterial color={color} roughness={1} metalness={0} />
+    </mesh>
+  )
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function RendererSetup() {
@@ -26,6 +52,8 @@ function RendererSetup() {
   }, [gl])
   return null
 }
+
+const BATTERY_GROUND_Y = 0.8  // battery rests on ground at this Y center
 
 // ─── Component categories ─────────────────────────────────────────────────────
 const BREADBOARD_TYPES = ['breadboard']
@@ -104,15 +132,90 @@ function ComponentSection({ title, models, activeShape, wiringMode, onSelect }) 
   )
 }
 
+// ─── Pin markers + optional LED glow ─────────────────────────────────────────
+function ComponentPinMarkers({ cs, showMarkers }) {
+  const isLED = cs.modelDef.type?.startsWith('led')
+  const glowColor = cs.modelDef.type === 'led_red'   ? '#ff3333'
+                  : cs.modelDef.type === 'led_green' ? '#00ff44'
+                  : '#2299ff'  // blue / default
+
+  // The LED dome is visually offset from the snap-hole by visualOffsetX,
+  // rotated by the component's own rotationY. Compute the actual dome
+  // world position so glow/light sit correctly on the dome.
+  const rotRad = ((cs.shape.rotationY ?? 0) * Math.PI) / 180
+  const vox = cs.modelDef.visualOffsetX ?? 0
+  const voz = cs.modelDef.visualOffsetZ ?? 0
+  const domeCenterX = cs.shape.position[0] + vox * Math.cos(rotRad) - voz * Math.sin(rotRad)
+  const domeCenterZ = cs.shape.position[2] + vox * Math.sin(rotRad) + voz * Math.cos(rotRad)
+
+  return (
+    <group>
+      {/* Pin role markers — debug only */}
+      {showMarkers && cs.pins.map((pin, i) => (
+        <mesh
+          key={i}
+          position={[pin.worldX, BB_THICKNESS + 0.28, pin.worldZ]}
+          rotation={[Math.PI / 2, 0, 0]}
+        >
+          <torusGeometry args={[0.22, 0.07, 8, 20]} />
+          <meshStandardMaterial
+            color={pin.role === 'anode' ? '#ef4444' : '#3b82f6'}
+            roughness={0.4}
+            metalness={0.1}
+            emissive={pin.role === 'anode' ? '#cc0000' : '#0033aa'}
+            emissiveIntensity={0.6}
+          />
+        </mesh>
+      ))}
+
+      {/* Strong point light at dome when powered */}
+      {isLED && cs.active && (
+        <pointLight
+          position={[domeCenterX, BB_THICKNESS + 3.2, domeCenterZ]}
+          color={glowColor}
+          intensity={18}
+          distance={16}
+          decay={2}
+        />
+      )}
+
+      {/* Inner bright core — tight, semi-opaque */}
+      {isLED && cs.active && (
+        <mesh position={[domeCenterX, BB_THICKNESS + 2.5, domeCenterZ]}>
+          <sphereGeometry args={[0.6, 16, 16]} />
+          <meshBasicMaterial color={glowColor} transparent opacity={0.55} depthWrite={false} />
+        </mesh>
+      )}
+
+      {/* Mid halo */}
+      {isLED && cs.active && (
+        <mesh position={[domeCenterX, BB_THICKNESS + 2.5, domeCenterZ]}>
+          <sphereGeometry args={[1.6, 16, 16]} />
+          <meshBasicMaterial color={glowColor} transparent opacity={0.18} depthWrite={false} />
+        </mesh>
+      )}
+
+      {/* Wide atmospheric bloom */}
+      {isLED && cs.active && (
+        <mesh position={[domeCenterX, BB_THICKNESS + 2.0, domeCenterZ]}>
+          <sphereGeometry args={[3.0, 16, 16]} />
+          <meshBasicMaterial color={glowColor} transparent opacity={0.06} depthWrite={false} />
+        </mesh>
+      )}
+    </group>
+  )
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const orbitRef = useRef()
   const [placed, setPlaced]               = useState([])
+  const [showPinMarkers, setShowPinMarkers] = useState(false)
   const [activeShape, setActiveShape]     = useState(null)
   const [ghostPos, setGhostPos]           = useState(null)
   const [ghostBlocked, setGhostBlocked]   = useState(false)
   const [selectedId, setSelectedId]       = useState(null)
-  const [rotations, setRotations]         = useState({})
+
 
   // ── Wires ──
   const [wiringMode, setWiringMode]         = useState(false)
@@ -185,6 +288,9 @@ export default function App() {
     setSelectedWireId(null)
   }, [])
 
+  // ── Board shape ──
+  const boardShape = placed.find(s => s.type === 'breadboard') ?? null
+
   // ── Wire placement ──
   const handleWireHoleClick = useCallback((holeResult) => {
     if (!wireStart) {
@@ -215,8 +321,82 @@ export default function App() {
     setSelectedWireId(null)
   }
 
-  // ── Board shape ──
-  const boardShape = placed.find(s => s.type === 'breadboard') ?? null
+  // ── Circuit simulation + component pin states (merged so edges are built first) ──
+  const { poweredNodes, groundedNodes, componentStates } = useMemo(() => {
+    // Build conductance edges from placed components so power flows through them
+    const componentEdges = buildComponentEdges(placed, boardShape, MODELS)
+    const { poweredNodes, groundedNodes } = simulateCircuit(wires, componentEdges)
+
+    // Now compute each component's pin states
+    const componentStates = boardShape
+      ? placed
+          .filter(s => s.type !== 'breadboard')
+          .map(s => {
+            const modelDef = MODELS.find(m => m.type === s.type)
+            if (!modelDef?.pins?.length) return null
+            const state = getComponentPinStates(s, boardShape, modelDef, poweredNodes, groundedNodes)
+            if (!state) return null
+            return { shape: s, modelDef, ...state }
+          })
+          .filter(Boolean)
+      : []
+
+    // Tag active polar components with whether a resistor is in their circuit path.
+    // A resistor is conducting if both its pin nodes are powered (power flowed through it).
+    const resistors = placed.filter(s => s.type === 'resistor')
+    const hasResistorInPath = resistors.some(r => {
+      const rDef = MODELS.find(m => m.type === 'resistor')
+      if (!rDef?.pins?.length) return false
+      const state = getComponentPinStates(r, boardShape, rDef, poweredNodes, groundedNodes)
+      return state?.active
+    })
+    const taggedStates = componentStates.map(cs =>
+      cs.active && cs.modelDef.anodePinIndex != null
+        ? { ...cs, hasResistor: hasResistorInPath }
+        : cs
+    )
+
+    return { poweredNodes, groundedNodes, componentStates: taggedStates }
+  }, [wires, placed, boardShape])
+
+  // ── Rail connection notifications ──
+  // Check if any endpoint of any placed wire is on a power or ground rail
+  const RAIL_TOLERANCE = 0.4
+  const isOnRail = (localZ, railCols) =>
+    railCols.some(c => Math.abs(localZ - c) < RAIL_TOLERANCE)
+
+  const railMessages = useMemo(() => {
+    const msgs = []
+    for (const w of wires) {
+      const [, slz] = w.startLocal
+      const [, elz] = w.endLocal
+      const startPower  = isOnRail(slz, POWER_RAIL_COLS)
+      const startGround = isOnRail(slz, GROUND_RAIL_COLS)
+      const endPower    = isOnRail(elz, POWER_RAIL_COLS)
+      const endGround   = isOnRail(elz, GROUND_RAIL_COLS)
+      if (startPower  || endPower)  msgs.push({ id: w.id, type: 'power',  text: 'Wire connected to power rail (+)' })
+      if (startGround || endGround) msgs.push({ id: w.id, type: 'ground', text: 'Wire connected to ground rail (−)' })
+    }
+    // Deduplicate — only show each type once
+    const seen = new Set()
+    return msgs.filter(m => {
+      if (seen.has(m.type)) return false
+      seen.add(m.type)
+      return true
+    })
+  }, [wires])
+
+  // Auto-dismiss rail messages 3s after they last changed
+  const [railMsgVisible, setRailMsgVisible] = useState(false)
+  const railDismissTimer = useRef(null)
+  useEffect(() => {
+    if (railMessages.length > 0) {
+      setRailMsgVisible(true)
+      clearTimeout(railDismissTimer.current)
+      railDismissTimer.current = setTimeout(() => setRailMsgVisible(false), 3000)
+    }
+    return () => clearTimeout(railDismissTimer.current)
+  }, [railMessages])
 
   useEffect(() => {
     const handler = (e) => {
@@ -287,28 +467,11 @@ export default function App() {
           return prev.map(s => s.id === selectedId ? { ...s, rotationY: newRot } : s)
         })
 
-        // Keep rotations map in sync (used by OBJModel for its rotation prop)
-        setRotations(prev => {
-          const target = placed.find(s => s.id === selectedId)
-          if (!target) return prev
-          const newRot = ((target.rotationY ?? 0) + 90) % 360
-
-          if (target.type === 'breadboard') {
-            const updates = { [selectedId]: newRot }
-            for (const s of placed) {
-              if (s.id === selectedId) continue
-              if (Math.abs(s.position[1] - BB_THICKNESS) > 0.1) continue
-              updates[s.id] = ((s.rotationY ?? 0) + 90) % 360
-            }
-            return { ...prev, ...updates }
-          }
-          return { ...prev, [selectedId]: newRot }
-        })
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [selectedId, selectedWireId, rotations, wiringMode, wireStart, placed])
+  }, [selectedId, selectedWireId, wiringMode, wireStart, placed])
 
   const sharedProps = {
     onSelect: handleSelectPlaced,
@@ -416,6 +579,20 @@ export default function App() {
           <div><b style={{color:'#64748b'}}>WASD</b> move &nbsp;·&nbsp; <b style={{color:'#64748b'}}>Space/Shift</b> up/down</div>
           <div><b style={{color:'#64748b'}}>Drag</b> rotate &nbsp;·&nbsp; <b style={{color:'#64748b'}}>Scroll</b> zoom</div>
           <div><b style={{color:'#64748b'}}>Click</b> select &nbsp;·&nbsp; <b style={{color:'#64748b'}}>Del</b> delete &nbsp;·&nbsp; <b style={{color:'#64748b'}}>R</b> rotate</div>
+          <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid #e2e8f0' }}>
+            <button
+              onClick={() => setShowPinMarkers(v => !v)}
+              style={{
+                width: '100%', padding: '4px 0', fontSize: 10, fontFamily: 'monospace',
+                background: showPinMarkers ? '#fef9c3' : '#f1f5f9',
+                border: '1px solid ' + (showPinMarkers ? '#ca8a04' : '#cbd5e1'),
+                borderRadius: 4, color: showPinMarkers ? '#92400e' : '#64748b',
+                cursor: 'pointer', fontWeight: showPinMarkers ? 700 : 400,
+              }}
+            >
+              {showPinMarkers ? '● Pin Markers ON' : '○ Pin Markers OFF'}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -476,6 +653,53 @@ export default function App() {
           </div>
         )}
 
+        {/* ── Component power status ── */}
+        {componentStates.some(c => c.active || c.reversedPolarity) && (
+          <div style={{
+            position: 'absolute', bottom: 44, left: '50%', transform: 'translateX(-50%)',
+            display: 'flex', flexDirection: 'column', gap: 5, alignItems: 'center',
+            pointerEvents: 'none', zIndex: 5,
+          }}>
+            {componentStates.filter(c => c.active || c.reversedPolarity).map(c => (
+              <div key={c.shape.id} style={{
+                background: c.active
+                  ? 'rgba(34,197,94,0.15)'
+                  : 'rgba(239,68,68,0.15)',
+                border: `1px solid ${c.active ? '#22c55e' : '#ef4444'}`,
+                color: c.active ? '#86efac' : '#fca5a5',
+                padding: '4px 14px', borderRadius: 999, fontSize: 11,
+                backdropFilter: 'blur(6px)',
+                display: 'flex', alignItems: 'center', gap: 6,
+              }}>
+                <span>{c.active ? '✅' : '⚠️'}</span>
+                {c.modelDef.label}:&nbsp;
+                {c.active ? (c.isTerminal ? 'in circuit ✓' : c.hasResistor ? 'powered ✓ (with resistor)' : 'powered') : 'reversed polarity — flip component'}
+              </div>
+            ))}
+          </div>
+        )}
+        {railMessages.length > 0 && railMsgVisible && !wiringMode && !activeShape && (
+          <div style={{
+            position: 'absolute', bottom: 14, right: 14,
+            display: 'flex', flexDirection: 'column', gap: 6,
+            pointerEvents: 'none', zIndex: 5,
+          }}>
+            {railMessages.map(m => (
+              <div key={m.type} style={{
+                background: m.type === 'power' ? 'rgba(239,68,68,0.15)' : 'rgba(59,130,246,0.15)',
+                border: `1px solid ${m.type === 'power' ? '#ef4444' : '#3b82f6'}`,
+                color: m.type === 'power' ? '#fca5a5' : '#93c5fd',
+                padding: '5px 14px', borderRadius: 999, fontSize: 11,
+                backdropFilter: 'blur(6px)',
+                display: 'flex', alignItems: 'center', gap: 6,
+              }}>
+                <span>{m.type === 'power' ? '⚡' : '⏚'}</span>
+                {m.text}
+              </div>
+            ))}
+          </div>
+        )}
+
         <Canvas
           shadows
           camera={{ position: [6, 4, 8], fov: 60 }}
@@ -504,6 +728,11 @@ export default function App() {
                 {...sharedProps}
               />
             )}
+
+            {/* ── Pin role markers + LED glow ── */}
+            {componentStates.map(cs => (
+              <ComponentPinMarkers key={cs.shape.id} cs={cs} showMarkers={showPinMarkers} />
+            ))}
 
             {!wiringMode && activeShape && ghostPos && (
               <OBJGhostPreview type={activeShape.type} position={ghostPos} blocked={ghostBlocked} />

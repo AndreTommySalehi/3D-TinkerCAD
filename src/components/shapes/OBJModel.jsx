@@ -12,6 +12,53 @@ function useOBJModel(modelDef) {
   useEffect(() => {
     let cancelled = false
 
+    function detectPins(obj, autoScale) {
+      // Collect all vertices in model-local space (after centering, before scale)
+      const verts = []
+      obj.traverse(child => {
+        if (!child.isMesh) return
+        const pos = child.geometry.attributes.position
+        if (!pos) return
+        const mat = child.matrixWorld  // child's local transform within obj
+        for (let i = 0; i < pos.count; i++) {
+          const v = new THREE.Vector3().fromBufferAttribute(pos, i)
+          v.applyMatrix4(mat)
+          verts.push(v)
+        }
+      })
+      if (!verts.length) return []
+
+      // Find Y range and isolate bottom 15% — that's where pins live
+      const minY = Math.min(...verts.map(v => v.y))
+      const maxY = Math.max(...verts.map(v => v.y))
+      const pinYThreshold = minY + (maxY - minY) * 0.15
+      const pinVerts = verts.filter(v => v.y <= pinYThreshold)
+      if (!pinVerts.length) return []
+
+      // Cluster by X position — each cluster is one pin
+      // Sort by X then greedily group within 0.3 units
+      pinVerts.sort((a, b) => a.x - b.x)
+      const clusters = []
+      for (const v of pinVerts) {
+        const last = clusters[clusters.length - 1]
+        if (!last || Math.abs(v.x - last.sumX / last.count) > 0.3) {
+          clusters.push({ sumX: v.x, sumZ: v.z, count: 1 })
+        } else {
+          last.sumX += v.x
+          last.sumZ += v.z
+          last.count++
+        }
+      }
+
+      // Return pin local positions scaled to world units, sorted by X (left→right)
+      return clusters
+        .map(c => ({
+          localX: (c.sumX / c.count) * autoScale,
+          localZ: (c.sumZ / c.count) * autoScale,
+        }))
+        .sort((a, b) => a.localX - b.localX)
+    }
+
     function processObj(obj) {
       const box = new THREE.Box3().setFromObject(obj)
       const size = new THREE.Vector3()
@@ -26,6 +73,14 @@ function useOBJModel(modelDef) {
       group.scale.setScalar(autoScale)
       group.add(obj)
       registerModelAABB(modelDef.type, (size.x * autoScale) / 2, (size.z * autoScale) / 2)
+
+      // Detect physical pin positions and cache on modelDef
+      // Run after obj.position is set so vertices are in centered local space
+      const pins = detectPins(obj, autoScale)
+      if (pins.length >= 2) {
+        modelDef.detectedPins = pins
+      }
+
       return group
     }
 
@@ -122,11 +177,26 @@ function OBJModelInner({ shape, modelDef, isSelected, onSelect, onDragStart, onD
     if (!sourceModel || !groupRef.current) return
     while (groupRef.current.children.length) groupRef.current.remove(groupRef.current.children[0])
     const clone = sourceModel.clone(true)
-    // Clone stays at local origin — offset is applied to the group position instead,
-    // so the group pivot (= rotation center) is at the mesh center, not the hole.
+    // Group has NO rotation — it just sits at shape.position (the snap hole).
+    // The clone itself carries the rotation AND the fixed world-space visual offset.
+    // This way vox/voz is always a plain local offset (group is unrotated),
+    // and the clone spins in place around the snap hole.
+    const vox = modelDef.visualOffsetX ?? 0
+    const voz = modelDef.visualOffsetZ ?? 0
+    clone.position.set(vox, 0, voz)
+    clone.rotation.set(0, (rotationY * Math.PI) / 180, 0)
     groupRef.current.add(clone)
     sceneRef.current = clone
-  }, [sourceModel])
+  }, [sourceModel, modelDef])
+
+  // Update clone rotation and position when rotationY changes (R key press).
+  useEffect(() => {
+    if (!sceneRef.current) return
+    const vox = modelDef.visualOffsetX ?? 0
+    const voz = modelDef.visualOffsetZ ?? 0
+    sceneRef.current.position.set(vox, 0, voz)
+    sceneRef.current.rotation.set(0, (rotationY * Math.PI) / 180, 0)
+  }, [rotationY, modelDef, sourceModel])
 
   useEffect(() => {
     if (!sceneRef.current) return
@@ -290,7 +360,6 @@ function OBJModelInner({ shape, modelDef, isSelected, onSelect, onDragStart, onD
     <group
       ref={groupRef}
       position={finalPos}
-      rotation={[0, (rotationY * Math.PI) / 180, 0]}
       onPointerDown={handlePointerDown}
     />
   )
@@ -315,8 +384,12 @@ function OBJGhostInner({ modelDef, position, blocked }) {
       color: blocked ? '#f87171' : '#38bdf8', transparent: true, opacity: 0.4, depthWrite: false,
     })
     clone.traverse((child) => { if (child.isMesh) child.material = ghostMat })
+    // Match the same visualOffsetX shift applied to placed models
+    const vox = modelDef.visualOffsetX ?? 0
+    const voz = modelDef.visualOffsetZ ?? 0
+    if (vox || voz) clone.position.set(vox, 0, voz)
     groupRef.current.add(clone)
-  }, [sourceModel, blocked])
+  }, [sourceModel, blocked, modelDef])
 
   const isOnBoard = Math.abs(position[1] - BB_THICKNESS) < 0.05
   const pinOffset = isOnBoard ? (modelDef.pinOffset ?? 0) : 0

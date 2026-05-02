@@ -115,6 +115,12 @@ export const BB_THICKNESS   = 2.773
 export const BB_HALF_LENGTH = 14.65
 export const BB_HALF_WIDTH  = 10.24
 
+// ─── Rail col Z values for power/ground detection ────────────────────────────
+// Left side:  outer (-8.4598) = red/power, inner (-7.5120) = blue/ground
+// Right side: outer (8.7086)  = blue/ground, inner (7.7592) = red/power (FLIPPED)
+export const POWER_RAIL_COLS  = [-8.4598, 7.7592]
+export const GROUND_RAIL_COLS = [-7.5120, 8.7086]
+
 // ─── Component types that bridge the centre gap ───────────────────────────────
 const BRIDGE_GAP_TYPES = new Set(['button', 'ic'])
 
@@ -258,77 +264,123 @@ export const SHAPES = [
 export const SHAPES_WITH_ID = SHAPES.map((s, i) => ({ ...s, id: `${s.type}-${i}` }))
 
 // ─── OBJ model catalogue ──────────────────────────────────────────────────────
-// offsetX / offsetZ: visually shift the mesh relative to the snap hole so the
-//   model's pin lines up with the texture hole. Both ghost and placed model
-//   shift by the same amount — the snap point (where the cursor is) stays fixed,
-//   the mesh moves around it. Tune in small steps until pin sits on hole.
-//   offsetX: positive = toward higher row numbers (breadboard length axis)
-//   offsetZ: positive = toward right rail (breadboard width axis)
+// pins: model-local pin offsets from mesh center (world units after scale).
+//   dx = along model X axis (breadboard row direction when rotationY=0)
+//   dz = along model Z axis
+//   role: 'anode'(+) | 'cathode'(-) | 'terminal'(non-polar)
+// anodePinIndex: which pin index is anode, for reference. null = non-polar.
 export const MODELS = [
   {
     type: 'breadboard', label: 'Breadboard',
     objPath: '/models/Breadboard-OBJ/BreadBoard.obj',
     mtlPath: '/models/Breadboard-OBJ/BreadBoard.mtl',
     targetSize: 30, pinOffset: 0, offsetX: 0, offsetZ: 0,
+    anodePinIndex: null, pins: [],
   },
   {
     type: 'resistor', label: 'Resistor',
     objPath: '/models/Resistor/Resistor.obj',
     mtlPath: '/models/Resistor/Resistor.mtl',
     targetSize: 3.75, pinOffset: 0.0, offsetX: 0, offsetZ: 0,
+    anodePinIndex: null,
+    pins: [
+      { dx: -1.75, dz: 0, role: 'terminal' },
+      { dx:  1.75, dz: 0, role: 'terminal' },
+    ],
   },
   {
     type: 'capacitor', label: 'Capacitor',
     objPath: '/models/Capacitor/Capacitor.obj',
     mtlPath: '/models/Capacitor/Capacitor.mtl',
     targetSize: 3.5, pinOffset: 0.35, offsetX: 0, offsetZ: 0,
+    anodePinIndex: 1,
+    pins: [
+      { dx: -0.93, dz: 0, role: 'cathode' },
+      { dx:  0.93, dz: 0, role: 'anode'   },
+    ],
   },
   {
     type: 'button', label: 'Button',
     objPath: '/models/Button/Button.obj',
     mtlPath: '/models/Button/Button.mtl',
     targetSize: 3.25, pinOffset: 0.3, offsetX: 0, offsetZ: 0,
+    anodePinIndex: null,
+    pins: [
+      { dx: -0.93, dz: 0, role: 'terminal' },
+      { dx:  0.93, dz: 0, role: 'terminal' },
+    ],
   },
   {
     type: 'buzzer', label: 'Buzzer',
     objPath: '/models/Buzzer/Buzzer.obj',
     mtlPath: '/models/Buzzer/Buzzer.mtl',
     targetSize: 2.8125, pinOffset: 0.3, offsetX: 0, offsetZ: 0,
+    anodePinIndex: 1,
+    pins: [
+      { dx: -0.93, dz: 0, role: 'cathode' },
+      { dx:  0.93, dz: 0, role: 'anode'   },
+    ],
   },
   {
     type: 'diode', label: 'Diode',
     objPath: '/models/Diode/Diode.obj',
     mtlPath: '/models/Diode/Diode.mtl',
     targetSize: 3.75, pinOffset: 0.35, offsetX: 0, offsetZ: 0,
+    anodePinIndex: 0,
+    pins: [
+      { dx: -0.93, dz: 0, role: 'anode'   },
+      { dx:  0.93, dz: 0, role: 'cathode' },
+    ],
   },
   {
     type: 'ic', label: 'IC Chip',
     objPath: '/models/IC/IC.obj',
     mtlPath: '/models/IC/IC.mtl',
     targetSize: 3.5, pinOffset: 0.25, offsetX: 0.45, offsetZ: 0,
+    anodePinIndex: null, pins: [], // multi-pin, TODO
   },
   {
     type: 'led_blue', label: 'LED Blue',
     objPath: '/models/LED-Blue/LEDBlue.obj',
     mtlPath: '/models/LED-Blue/LEDBlue.mtl',
-    targetSize: 3.5, pinOffset: 0.4, offsetX: 5.1, offsetZ: 0,
+    targetSize: 3.5, pinOffset: 0.4, offsetX: 0, offsetZ: 0, visualOffsetX: 5.1,
+    anodePinIndex: 1,
+    // dx/dz are relative to the logical snap hole (the board hole the component straddles).
+    // circuitSim.js recovers the snap hole by subtracting offsetX from shape.position,
+    // then adds pin.dx to get each physical leg's hole world position (used for both
+    // circuit node lookup AND visual marker rendering).
+    pins: [
+      { dx: -0.30, dz: 0, role: 'cathode' },
+      { dx:  0.55, dz: 0, role: 'anode'   },
+    ],
   },
   {
     type: 'led_green', label: 'LED Green',
     objPath: '/models/LED-Green/LEDGreen.obj',
     mtlPath: '/models/LED-Green/LEDGreen.mtl',
-    targetSize: 3.5, pinOffset: 0.4, offsetX: 5.1, offsetZ: 0,
+    targetSize: 3.5, pinOffset: 0.4, offsetX: 0, offsetZ: 0, visualOffsetX: 5.1,
+    anodePinIndex: 1,
+    pins: [
+      { dx: -0.3, dz: 0, role: 'cathode' },
+      { dx:  0.55, dz: 0, role: 'anode'   },
+    ],
   },
   {
     type: 'led_red', label: 'LED Red',
     objPath: '/models/LED-Red/LEDRed.obj',
     mtlPath: '/models/LED-Red/LEDRed.mtl',
-    targetSize: 3.5, pinOffset: 0.4, offsetX: 5.1, offsetZ: 0,
+    targetSize: 3.5, pinOffset: 0.4, offsetX: 0, offsetZ: 0, visualOffsetX: 5.1,
+    anodePinIndex: 1,
+    pins: [
+      { dx: -0.3, dz: 0, role: 'cathode' },
+      { dx:  0.55, dz: 0, role: 'anode'   },
+    ],
   },
   {
     type: 'transistor', label: 'Transistor',
     objPath: '/models/Transistor/Transistor.obj',
     mtlPath: '/models/Transistor/Transistor.mtl',
     targetSize: 2.8125, pinOffset: 0.35, offsetX: 0, offsetZ: 0,
+    anodePinIndex: null, pins: [], // 3-pin BJT, TODO
   },
 ]
